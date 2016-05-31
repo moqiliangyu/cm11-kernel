@@ -2231,10 +2231,11 @@ __wl_cfg80211_scan(struct wiphy *wiphy, struct net_device *ndev,
 					WL_DBG(("P2P: GO_NEG_PHASE status cleared \n"));
 					p2p_scan(wl) = true;
 				}
-			} else {
+			} else if (wl_get_mode_by_netdev(wl, ndev) != WL_MODE_IBSS) {
 				/* legacy scan trigger
 				 * So, we have to disable p2p discovery if p2p discovery is on
 				 */
+				WL_ERR(("Created by LJW, else if implemented"));
 				if (wl->p2p_supported) {
 					p2p_scan(wl) = false;
 					/* If Netdevice is not equals to primary and p2p is on
@@ -2273,6 +2274,7 @@ __wl_cfg80211_scan(struct wiphy *wiphy, struct net_device *ndev,
 		}
 	} else {		/* scan in ibss */
 		/* we don't do iscan in ibss */
+		WL_ERR(("Created by LJW, else implemented"));
 		ssids = this_ssid;
 	}
 	if (request && !p2p_scan(wl))
@@ -3928,8 +3930,7 @@ wl_cfg80211_get_station(struct wiphy *wiphy, struct net_device *dev,
 			bcm_ether_ntoa((const struct ether_addr *)mac, eabuf), sinfo->inactive_time,
 			sta->idle * 1000));
 #endif
-	} else if (wl_get_mode_by_netdev(wl, dev) == WL_MODE_BSS ||
-		wl_get_mode_by_netdev(wl, dev) == WL_MODE_IBSS) {
+	} else if (wl_get_mode_by_netdev(wl, dev) == WL_MODE_BSS) {
 		get_pktcnt_t pktcnt;
 		u8 *curmacp = wl_read_prof(wl, dev, WL_PROF_BSSID);
 		if (!wl_get_drv_status(wl, CONNECTED, dev) ||
@@ -4007,6 +4008,73 @@ get_station_err:
 			wl_link_down(wl);
 		}
 	}
+	
+	else if (wl_get_mode_by_netdev(wl, dev) == WL_MODE_IBSS) {
+		u8 *curmacp = wl_read_prof(wl, dev, WL_PROF_BSSID);
+
+		memset(&scb_val, 0, sizeof(scb_val));
+		bcopy(mac, &scb_val.ea, 6);
+
+		err = wldev_ioctl(dev, WLC_GET_RSSI, &scb_val,
+			sizeof(scb_val_t), false);
+
+		WL_ERR(("Created by LJW, get_station_err\n"));  
+
+		if (err) {
+			WL_ERR(("Could not get rssi (%d)\n", err));
+			return err;
+		}
+		rssi = dtoh32(scb_val.val);
+
+		/* the RSSI value from the firmware is an average but user-space
+		 expects it as signal, so we fill in both */
+		sinfo->filled |= STATION_INFO_SIGNAL;
+		sinfo->signal = rssi;
+		sinfo->filled |= STATION_INFO_SIGNAL_AVG;
+		sinfo->signal_avg = rssi;
+
+		if (!memcmp(mac, curmacp, ETHER_ADDR_LEN)) {
+			// BSSID is not a real station. Can't get sta_info; Done
+			return 0;
+		}
+
+		err = wldev_iovar_getbuf(dev, "sta_info", (struct ether_addr *)mac,
+			ETHER_ADDR_LEN, wl->ioctl_buf, WLC_IOCTL_MAXLEN, &wl->ioctl_buf_sync);
+		if (err < 0) {
+			WL_ERR(("GET STA INFO failed, %d\n", err));
+			return err;
+		}
+
+		sta = (sta_info_t *)wl->ioctl_buf;
+		sta->len = dtoh16(sta->len);
+		sta->cap = dtoh16(sta->cap);
+		sta->flags = dtoh32(sta->flags);
+		sta->idle = dtoh32(sta->idle);
+		sta->in = dtoh32(sta->in);
+		sta->listen_interval_inms = dtoh32(sta->listen_interval_inms);
+		sta->tx_pkts = dtoh32(sta->tx_pkts);
+		sta->tx_failures = dtoh32(sta->tx_failures);
+		sta->rx_ucast_pkts = dtoh32(sta->rx_ucast_pkts);
+		sta->rx_mcast_pkts = dtoh32(sta->rx_mcast_pkts);
+		sta->tx_rate = dtoh32(sta->tx_rate);
+		sta->rx_rate = dtoh32(sta->rx_rate);
+		sta->rx_decrypt_succeeds = dtoh32(sta->rx_decrypt_succeeds);
+		sta->rx_decrypt_failures = dtoh32(sta->rx_decrypt_failures);
+
+		sinfo->filled |= STATION_INFO_INACTIVE_TIME | STATION_INFO_TX_PACKETS |
+				STATION_INFO_TX_FAILED | STATION_INFO_RX_PACKETS |
+				STATION_INFO_TX_BITRATE | STATION_INFO_RX_BITRATE |
+				STATION_INFO_RX_DROP_MISC;
+
+		sinfo->inactive_time = sta->idle * 1000;
+		sinfo->tx_packets = sta->tx_pkts;
+		sinfo->tx_failed = sta->tx_failures;
+		sinfo->rx_packets = sta->rx_ucast_pkts + sta->rx_mcast_pkts;
+		sinfo->txrate.legacy = sta->tx_rate / 100;
+		sinfo->rxrate.legacy = sta->rx_rate / 100;
+		sinfo->rx_dropped_misc = sta->rx_decrypt_failures;
+	}
+	
 	else {
 		WL_ERR(("Invalid device mode %d\n", wl_get_mode_by_netdev(wl, dev)));
 	}
